@@ -1,0 +1,151 @@
+.section .text
+.global nsqrt
+.intel_syntax noprefix
+.type nsqrt, @function
+
+nsqrt:
+	#Arguments: 
+	#rdi = pointer to Q (output)
+	#rsi = pointer to X (input)
+	#rdx = n (bit length of X)
+	       
+	#zero the operating space                
+	mov r8, rdx
+	shr r8, 6
+.zero_loop:
+	dec r8
+	mov QWORD PTR [rdi + r8*8], 0
+	cmp r8, 0
+	jg .zero_loop
+	
+	#Iterates from most to least significant
+	#bits, calling inner loop on them.
+	#rax - current bit
+
+	mov rax, rdx
+.outer_loop:
+	cmp rax, 0
+	jz .main_end
+	dec rax
+	
+	#Sets inner loop counter to the highest value
+	#decreasing it - comparison from the highest to lowest bits
+	mov r8, rdx
+	shr r8, 5
+	
+	#The inner loop is responsible for comparation
+	#of two numbers and goes to a right case, either
+	#next step of the outer_loop or to set_and_subtract
+	#r8 = compared uint64 (in input array)
+.inner_loop:
+	dec r8	
+	call load
+	
+	# Compares the two values
+.compare:
+	cmp r9, r10
+	jb .set_and_subtract
+	ja .outer_loop
+	jmp .inner_loop_end
+	
+.set_and_subtract:
+	xor r8, r8
+	
+.subtract:
+	call load	#loads the both values into r9 and r10
+	bt rdx, 0	#checks flag in rdx (using the fact that last 6 bits are 0)
+	jz .as1		#flag is not up - continue normally
+
+	#flag is up
+	inc r9		#adds the reminder to subtrahend	
+	jnb .as1	#check if overflow occured
+	dec rdx		#it zeroes the flag is no overflow
+.as1:
+	sub r10, r9
+	jae .as2	#no overflow - no problem
+	inc rdx		#overflow - it could only occur if flag is zero
+			#because else r9 == 0
+.as2:
+	#set the value
+	mov QWORD PTR [rsi + 8*r8 ], r10	
+	
+	#loop end conditions
+	inc r8
+	mov r9, rdx	
+	shr r9, 5
+	cmp r8, r9
+	jb .subtract
+	
+.set:
+	#load the adress of the cell in array
+	mov r8, rax	
+	shr r8, 6
+	
+	#load the bit and shift
+	mov rcx, rax
+	mov r10, 1
+	and cl, 63
+	shl r10, cl
+
+	#add the bit
+	mov r11, QWORD PTR [rdi + r8 * 8]
+	or r11, r10
+	mov QWORD PTR [rdi + r8 * 8], r11
+	
+	#end of iteration
+	jmp .outer_loop
+
+.inner_loop_end:
+	cmp r8, 0
+	jz .set_and_subtract
+	jmp .inner_loop
+	
+.main_end:
+	ret
+
+	# rax: bit checked in Q array
+	# r8: uint64 compared
+	# loads corresponding chunk of X into r9
+	# free to use: r10, r11, rcx
+	# REMEMBER TO OPTIMIZE REGISTERS, MAYBE FEW BYTES
+load:	
+	# load the adress of the more significant uint64 into r10
+	xor r9, r9
+	lea r11, [rax + 1]	#load the shift in r11
+	shr r11, 6		#adjust
+	mov r10, r8
+	sub r10, r11		#main goal
+
+	mov r11, rdx		
+	shr r11, 6
+	cmp r10, r11			#case where Q did not even start yet 
+	ja .load_end			#or index is negative (underflow)
+	jz .left_array_bound		#other case with equality (other array is good)
+	mov r9, QWORD PTR [rdi + r10*8]	#loads 2 neighbouring uint64s
+	cmp r10, 0
+	jz .right_array_bound
+.left_array_bound:
+	mov r11, QWORD PTR [rdi + r10*8 + 8]
+	jmp .get 
+.right_array_bound:
+	xor r11, r11
+.get:
+	lea rcx, [rdx + 1]	#load the shift
+	and cl, 63
+	shld r9, r11, cl	#load the right value
+
+	mov r10, rax		#load the corresponging address of the bit
+	shr r10, 5		#as uint64 into r10
+	cmp r8, r10		#check if the bit needs to be added
+	jnz .load_end	
+	
+	lea rcx, [rax + rax]	#add the bit with propper shift
+	mov r10, 1
+	and cl, 63
+	shl r10, cl
+	add r9, r10
+	
+.load_end:	
+	# loads the other value and returns
+	mov r10, QWORD PTR [rsi + 8*r8]
+	ret
